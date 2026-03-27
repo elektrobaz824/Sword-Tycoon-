@@ -4,6 +4,7 @@
 ]]
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local Workspace = game:GetService("Workspace")
 
@@ -13,6 +14,36 @@ local PlotClaimService = {}
 local function getPlayerDataService()
 	for _, desc in ServerScriptService:GetDescendants() do
 		if desc:IsA("ModuleScript") and desc.Name == "PlayerDataService" then
+			return require(desc)
+		end
+	end
+	return nil
+end
+
+local function getPlotSetupService()
+	for _, desc in ServerScriptService:GetDescendants() do
+		if desc:IsA("ModuleScript") and desc.Name == "PlotSetupService" then
+			return require(desc)
+		end
+	end
+	return nil
+end
+
+local function getInventoryService()
+	for _, desc in ServerScriptService:GetDescendants() do
+		if desc:IsA("ModuleScript") and desc.Name == "InventoryService" then
+			return require(desc)
+		end
+	end
+	return nil
+end
+
+local function getStatsApplyService()
+	if _G.SwordTycoonStatsApplyService then
+		return _G.SwordTycoonStatsApplyService
+	end
+	for _, desc in ServerScriptService:GetDescendants() do
+		if desc:IsA("ModuleScript") and desc.Name == "StatsApplyService" then
 			return require(desc)
 		end
 	end
@@ -33,15 +64,44 @@ local plotToPlayer: { [Instance]: Player } = {}
 local COOLDOWN_SECONDS = 10
 local lastAlreadyHasPlotMessage: { [Player]: number } = {}
 
--- נקרא אחרי Claim מוצלח – טוען נתונים ומרענן leaderstats
+-- מעדכן HUD סטטים בקליינט (HP/XP bars + פאנל) אחרי שיש נתונים בשרת
+local function notifyStatsReady(player: Player)
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+	local ev = remotes and remotes:FindFirstChild("StatsUpdated")
+	if ev and ev:IsA("RemoteEvent") then
+		ev:FireClient(player)
+	end
+end
+
+-- נקרא אחרי Claim מוצלח – טוען נתונים, מרענן leaderstats, משחזר Inventory, ומגדיר Plot (מכונה ראשונה וכו')
 local function onPlotClaimed(player: Player, plot: Instance)
 	local pds = getPlayerDataService()
 	if pds then
 		local data = pds.LoadPlayerData(player)
 		if data then
 			pds.RefreshLeaderstats(player)
+			local invSvc = getInventoryService()
+			if invSvc and invSvc.LoadFromSave then
+				local savedInv = type(data.Inventory) == "table" and data.Inventory or {}
+				local n = 0
+				for _ in pairs(savedInv) do n = n + 1 end
+				if n > 0 then
+					print("[PlotClaim] טוען " .. tostring(n) .. " סוגי חומרים מ-Inventory לשחקן " .. player.Name)
+				end
+				invSvc.LoadFromSave(player, savedInv)
+			end
 		end
 	end
+	local plotSetup = getPlotSetupService()
+	if plotSetup then
+		plotSetup.SetupPlotForPlayer(player, plot)
+	end
+	-- Apply Health/Speed stats to character after data loaded
+	local statsApply = getStatsApplyService()
+	if statsApply and statsApply.ApplyToCharacter then
+		statsApply.ApplyToCharacter(player)
+	end
+	notifyStatsReady(player)
 end
 
 local function getPlayerFromCharacter(part: BasePart): Player?
@@ -132,6 +192,27 @@ function PlotClaimService.Init()
 				if owner then
 					plotToPlayer[child] = owner
 					playerToPlot[owner] = child
+					local pds = getPlayerDataService()
+					if pds then
+						pds.LoadPlayerData(owner)
+						local data = pds.GetPlayerData(owner)
+						if data then
+							local invSvc = getInventoryService()
+							if invSvc and invSvc.LoadFromSave then
+								invSvc.LoadFromSave(owner, type(data.Inventory) == "table" and data.Inventory or {})
+							end
+						end
+					end
+					-- משחזר מבנה Plot ומכונה ראשונה + Pads שנרכשו (מכונות)
+					local plotSetup = getPlotSetupService()
+					if plotSetup then
+						plotSetup.SetupPlotForPlayer(owner, child)
+					end
+					local statsApply = getStatsApplyService()
+					if statsApply and statsApply.ApplyToCharacter then
+						statsApply.ApplyToCharacter(owner)
+					end
+					notifyStatsReady(owner)
 				else
 					child:SetAttribute(OWNER_ATTRIBUTE, nil)
 				end
